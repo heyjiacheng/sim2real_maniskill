@@ -26,8 +26,7 @@ def execute_trajectory_with_arm(
     cameras: Optional[dict] = None,
     output_dir: Optional[Path] = None,
     refine_steps: int = 5,
-    num_original_points: Optional[int] = None,
-    num_grasp_wait_points: int = 0
+    gripper_open: bool = True,
 ) -> int:
     """
     让机械臂执行轨迹，并可选地捕获图像
@@ -40,8 +39,7 @@ def execute_trajectory_with_arm(
         cameras: 相机字典（如果需要捕获图像）
         output_dir: 输出目录（如果需要捕获图像）
         refine_steps: 每个轨迹点的细化步数
-        num_original_points: 原始轨迹点数量（如果提供，将在等待点闭合夹爪，在抬升阶段保持闭合）
-        num_grasp_wait_points: 等待点数量（用于闭合夹爪）
+        gripper_open: 夹爪状态（True=张开1.0, False=闭合-1.0）
 
     Returns:
         执行的总步数
@@ -51,9 +49,7 @@ def execute_trajectory_with_arm(
 
     capture_images_flag = cameras is not None and output_dir is not None
     total_steps = 0
-
-    # 闭合夹爪所需的步数
-    GRASP_STEPS = 5
+    gripper_state = 1.0 if gripper_open else -1.0
 
     for idx, (position, quaternion) in enumerate(zip(positions, quaternions)):
         try:
@@ -66,14 +62,7 @@ def execute_trajectory_with_arm(
             base_pose = env.unwrapped.agent.robot.pose
             target_tcp_pose_at_base = base_pose.inv() * target_tcp_pose
 
-            # if idx == 0:
-            #     print(f"  第一个轨迹点调试信息:")
-            #     print(f"    世界坐标: p={position}, q={quat_wxyz}")
-            #     print(f"    基座坐标: p={target_tcp_pose_at_base.p}, q={target_tcp_pose_at_base.q}")
-
             # 转换为 Pose 对象（用于IK）
-            # target_tcp_pose_at_base.p 和 .q 已经是 tensor，直接使用
-            # 确保形状为 [1, 3] 和 [1, 4]
             device = env.unwrapped.device
             if isinstance(target_tcp_pose_at_base.p, torch.Tensor):
                 p_tensor = target_tcp_pose_at_base.p.reshape(1, 3).to(device)
@@ -87,9 +76,9 @@ def execute_trajectory_with_arm(
             # 使用IK求解关节角度
             current_qpos = env.unwrapped.agent.robot.get_qpos()
             target_qpos = kinematics.compute_ik(
-                pose=target_pose,
+                target_pose,
                 q0=current_qpos,
-                is_delta_pose=False,
+                use_delta_ik_solver=False,
             )
 
             if target_qpos is None:
@@ -106,37 +95,13 @@ def execute_trajectory_with_arm(
         start_qpos = current_qpos[0, :len(target_qpos[0])].cpu().numpy()
         target_qpos_np = target_qpos[0].cpu().numpy()
 
-        # 判断当前处于哪个阶段：
-        # 1. 原始轨迹阶段: idx < num_original_points
-        # 2. 闭合夹爪等待阶段: num_original_points <= idx < num_original_points + num_grasp_wait_points
-        # 3. 抬升阶段: idx >= num_original_points + num_grasp_wait_points
-        is_grasping = (num_original_points is not None and
-                       num_original_points <= idx < num_original_points + num_grasp_wait_points)
-        is_lifting = (num_original_points is not None and
-                      idx >= num_original_points + num_grasp_wait_points)
-
         for step in range(refine_steps):
             # 线性插值
             alpha = (step + 1) / refine_steps
             interp_qpos = start_qpos * (1 - alpha) + target_qpos_np * alpha
 
-            # 计算夹爪状态
-            if is_grasping:
-                # 在等待点阶段，逐渐闭合夹爪
-                # 计算从闭合开始到现在的总步数
-                steps_since_grasp_start = (idx - num_original_points) * refine_steps + step
-                grasp_alpha = min(1.0, steps_since_grasp_start / GRASP_STEPS)
-                gripper_state = 1.0 * (1 - grasp_alpha) + (-1.0) * grasp_alpha  # 从1.0(开)到-1.0(闭)
-            elif is_lifting:
-                # 在抬升阶段，保持夹爪完全闭合
-                gripper_state = -1.0
-            else:
-                # 在原始轨迹阶段，保持夹爪张开
-                gripper_state = 1.0
-
             # 构建动作：关节位置 + gripper状态
             action = np.hstack([interp_qpos, gripper_state])
-            # 将numpy数组转换为tensor，避免从列表创建（性能优化）
             action_tensor = torch.from_numpy(action).unsqueeze(0).float().to(env.unwrapped.device)
 
             # 执行一步
@@ -165,20 +130,27 @@ def grasp_and_lift(
     kinematics: Kinematics,
     lift_height: float = 0.2,
     grasp_steps: int = 20,
+    wait_steps: int = 10,
     lift_steps: int = 30,
     cameras: Optional[dict] = None,
     output_dir: Optional[Path] = None,
     start_step: int = 0,
 ) -> int:
     """
-    闭合夹爪并抬升
+    闭合夹爪、等待稳定、然后抬升
+
+    这个函数按以下步骤执行：
+    1. 逐渐闭合夹爪（grasp_steps步）
+    2. 保持当前姿态等待，让物理引擎稳定（wait_steps步）
+    3. 垂直抬升指定高度（lift_steps步）
 
     Args:
         env: ManiSkill环境
         kinematics: IK求解器
         lift_height: 抬升高度（米），默认0.2m (20cm)
-        grasp_steps: 闭合夹爪的步数
-        lift_steps: 抬升的步数
+        grasp_steps: 闭合夹爪的步数，默认20
+        wait_steps: 等待稳定的步数，默认10
+        lift_steps: 抬升的步数，默认30
         cameras: 相机字典（如果需要捕获图像）
         output_dir: 输出目录（如果需要捕获图像）
         start_step: 起始步数（用于图像编号连续）
@@ -187,24 +159,19 @@ def grasp_and_lift(
         执行的总步数
     """
     print(f"\n开始抓取和抬升 (高度: {lift_height*100:.1f}cm)...")
+    print(f"  阶段: 闭合夹爪({grasp_steps}步) -> 等待稳定({wait_steps}步) -> 抬升({lift_steps}步)")
 
     capture_images_flag = cameras is not None and output_dir is not None
     total_steps = 0
     current_step = start_step
 
     # 步骤1: 闭合夹爪
-    print(f"  1. 闭合夹爪 ({grasp_steps} 步)...")
+    print(f"\n  1. 闭合夹爪 ({grasp_steps} 步)...")
 
     try:
         current_qpos = env.unwrapped.agent.robot.get_qpos()
-        print(f"  调试: current_qpos shape = {current_qpos.shape}")
-
-        # 获取arm关节数量
         num_arm_joints = len(env.unwrapped.agent.arm_joint_names)
-        print(f"  调试: arm joints = {num_arm_joints}")
-
         arm_qpos = current_qpos[0, :num_arm_joints].cpu().numpy()
-        print(f"  调试: arm_qpos shape = {arm_qpos.shape}")
 
         for step in range(grasp_steps):
             # gripper从1.0(开)逐渐到-1.0(闭)
@@ -221,36 +188,97 @@ def grasp_and_lift(
             current_step += 1
             total_steps += 1
 
-        print(f"  ✓ 闭合夹爪完成")
+        print(f"     ✓ 闭合夹爪完成")
 
     except Exception as e:
-        print(f"  错误: 闭合夹爪失败: {e}")
+        print(f"     错误: 闭合夹爪失败: {e}")
         import traceback
         traceback.print_exc()
         return total_steps
 
-    # 步骤2: 抬升
-    print(f"  2. 抬升 {lift_height*100:.1f}cm ({lift_steps} 步)...")
+    # 步骤2: 等待稳定
+    print(f"\n  2. 等待稳定 ({wait_steps} 步)...")
+
+    try:
+        current_qpos = env.unwrapped.agent.robot.get_qpos()
+        num_arm_joints = len(env.unwrapped.agent.arm_joint_names)
+        arm_qpos = current_qpos[0, :num_arm_joints].cpu().numpy()
+
+        for step in range(wait_steps):
+            # 保持当前姿态和闭合状态不变，让物理引擎稳定
+            action = np.hstack([arm_qpos, -1.0])  # gripper保持闭合
+            action_tensor = torch.from_numpy(action).unsqueeze(0).float().to(env.unwrapped.device)
+            env.step(action_tensor)
+
+            if capture_images_flag:
+                capture_images(cameras, env.unwrapped.scene, output_dir, current_step)
+
+            current_step += 1
+            total_steps += 1
+
+        print(f"     ✓ 等待稳定完成")
+
+    except Exception as e:
+        print(f"     错误: 等待稳定失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return total_steps
+
+    # 步骤3: 抬升
+    print(f"\n  3. 垂直抬升 {lift_height*100:.1f}cm ({lift_steps} 步)...")
 
     try:
         device = env.unwrapped.device
-        current_qpos = env.unwrapped.agent.robot.get_qpos()
+        agent = env.unwrapped.agent
+        current_qpos = agent.robot.get_qpos()
 
-        # 使用相对位移：只在Z轴上抬升，姿态不变
-        # 创建一个相对位移的 Pose（基座坐标系）
-        delta_p = torch.tensor([[0.0, 0.0, lift_height]], dtype=torch.float32, device=device)
-        delta_q = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=device)  # 无旋转
-        delta_pose = Pose.create_from_pq(p=delta_p, q=delta_q)
+        # 获取当前TCP在世界坐标系的姿态
+        current_tcp_pose_world = agent.tcp_pose
 
-        # 使用IK求解相对位移
+        # 在世界坐标系中垂直向上抬升（world Z轴）
+        if isinstance(current_tcp_pose_world.p, torch.Tensor):
+            # 处理批量数据
+            target_position_world = current_tcp_pose_world.p.clone()
+            if target_position_world.ndim == 1:
+                target_position_world = target_position_world.unsqueeze(0)
+            target_position_world[:, 2] += lift_height  # 世界坐标系Z轴向上
+            target_quaternion_world = current_tcp_pose_world.q
+            if target_quaternion_world.ndim == 1:
+                target_quaternion_world = target_quaternion_world.unsqueeze(0)
+        else:
+            target_position_world = np.array(current_tcp_pose_world.p).reshape(-1, 3)
+            target_position_world[:, 2] += lift_height
+            target_quaternion_world = np.array(current_tcp_pose_world.q).reshape(-1, 4)
+
+        # 构建目标姿态（世界坐标系）
+        target_tcp_pose_world = sapien.Pose(
+            p=(target_position_world[0] if target_position_world.shape[0] == 1 else target_position_world).tolist() if isinstance(target_position_world, np.ndarray) else target_position_world[0].cpu().numpy().tolist(),
+            q=(target_quaternion_world[0] if target_quaternion_world.shape[0] == 1 else target_quaternion_world).tolist() if isinstance(target_quaternion_world, np.ndarray) else target_quaternion_world[0].cpu().numpy().tolist()
+        )
+
+        # 转换到基座坐标系
+        base_pose = agent.robot.pose
+        target_tcp_pose_at_base = base_pose.inv() * target_tcp_pose_world
+
+        # 转换为 Pose 对象（用于IK）
+        if isinstance(target_tcp_pose_at_base.p, torch.Tensor):
+            p_tensor = target_tcp_pose_at_base.p.reshape(1, 3).to(device)
+            q_tensor = target_tcp_pose_at_base.q.reshape(1, 4).to(device)
+        else:
+            p_tensor = torch.tensor([target_tcp_pose_at_base.p], dtype=torch.float32, device=device)
+            q_tensor = torch.tensor([target_tcp_pose_at_base.q], dtype=torch.float32, device=device)
+
+        target_pose = Pose.create_from_pq(p=p_tensor, q=q_tensor)
+
+        # 使用IK求解目标位置
         target_qpos = kinematics.compute_ik(
-            pose=delta_pose,
+            target_pose,
             q0=current_qpos,
-            is_delta_pose=True,  # 使用相对位移模式
+            use_delta_ik_solver=False,  # 使用绝对位置模式
         )
 
         if target_qpos is None:
-            print(f"  警告: 抬升位置IK求解失败，跳过抬升")
+            print(f"     警告: 抬升位置IK求解失败，跳过抬升")
             return total_steps
 
         # 执行抬升运动（插值）

@@ -479,7 +479,7 @@ def main():
         })
 
     # --- Save trajectory to JSON file ---
-    output_dir = Path("/home/supertc/jc_workspace/ManiSkill_VLA/dataset/trajectory/jc_test_folder/data/000_mug/trajectory")
+    output_dir = Path("dataset/trajectory/jc_test_folder/data/000_mug/trajectory")
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "trajectory.json"
 

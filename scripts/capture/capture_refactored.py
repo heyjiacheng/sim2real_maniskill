@@ -19,7 +19,7 @@ from src.camera_utils import capture_images, save_camera_params, setup_cameras
 from src.camera_config import CAMERA_VIEWS
 from src.gripper_viz import create_trajectory_grippers, remove_actors
 from src.trajectory_loader import load_trajectory
-from src.trajectory_executor import execute_trajectory_with_arm, initialize_ik_solver
+from src.trajectory_executor import execute_trajectory_with_arm, grasp_and_lift, initialize_ik_solver
 from src.video_utils import generate_videos
 from src.env_utils import create_maniskill_env, remove_default_objects, load_objects_to_env, hide_goal_markers
 
@@ -184,30 +184,24 @@ def main(args: Args):
     print("加载轨迹数据...")
     print("=" * 60)
 
-    # 抓取和抬升配置
-    LIFT_HEIGHT = 0.2  # 抬升高度（米）
-    NUM_LIFT_POINTS = 10  # 抬升轨迹点数量
-
     reference_camera = cameras[args.reference_camera]
-    trajectory_data, num_grasp_wait_points = load_trajectory(
+    # 只加载原始轨迹，不添加额外的点
+    trajectory_data, _ = load_trajectory(
         args.trajectory_path,
         reference_camera,
-        add_grasp_and_lift=args.do_grasp_and_lift,
-        lift_height=LIFT_HEIGHT,
-        num_lift_points=NUM_LIFT_POINTS,
-        num_grasp_wait_points=args.num_grasp_wait_points
+        add_grasp_and_lift=False,  # 不在这里添加，后续单独调用 grasp_and_lift
     )
 
     positions = [np.array(step["tcp_position"], dtype=np.float32) for step in trajectory_data]
     quaternions = [np.array(step["tcp_quaternion"], dtype=np.float32) for step in trajectory_data]
 
-    # 计算原始轨迹点数量（用于判断何时开始闭合夹爪）
-    if args.do_grasp_and_lift:
-        num_added_points = num_grasp_wait_points + NUM_LIFT_POINTS
-        num_original_points = len(positions) - num_added_points
-    else:
-        num_original_points = len(positions)
-        num_grasp_wait_points = 0
+    print(f"✓ 加载了 {len(positions)} 个轨迹关键点")
+
+    # 抓取和抬升配置
+    LIFT_HEIGHT = 0.2  # 抬升高度（米）
+    GRASP_STEPS = 20  # 闭合夹爪的步数
+    WAIT_STEPS = args.num_grasp_wait_points  # 等待稳定的步数
+    LIFT_STEPS = 30  # 抬升的步数
 
     # 隐藏目标标记
     if args.hide_goal:
@@ -245,6 +239,7 @@ def main(args: Args):
             print(f"输出: {output_dir}")
             print("=" * 60)
 
+            # 阶段1: 执行原始轨迹（夹爪保持张开）
             total_captured_steps = execute_trajectory_with_arm(
                 env=env,
                 positions=positions,
@@ -253,9 +248,22 @@ def main(args: Args):
                 cameras=cameras,
                 output_dir=output_dir,
                 refine_steps=args.ik_refine_steps,
-                num_original_points=num_original_points if args.do_grasp_and_lift else None,
-                num_grasp_wait_points=num_grasp_wait_points if args.do_grasp_and_lift else 0
+                gripper_open=True,  # 轨迹执行时夹爪张开
             )
+
+            # 阶段2: 闭合夹爪、等待稳定、抬升（如果启用）
+            if args.do_grasp_and_lift:
+                total_captured_steps += grasp_and_lift(
+                    env=env,
+                    kinematics=kinematics,
+                    lift_height=LIFT_HEIGHT,
+                    grasp_steps=GRASP_STEPS,
+                    wait_steps=WAIT_STEPS,
+                    lift_steps=LIFT_STEPS,
+                    cameras=cameras,
+                    output_dir=output_dir,
+                    start_step=total_captured_steps,
+                )
         else:
             # 静态场景捕获
             print("\n" + "=" * 60)

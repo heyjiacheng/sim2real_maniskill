@@ -20,18 +20,20 @@ def load_trajectory(
     """
     加载轨迹文件（新格式：相机坐标系下的4x4矩阵）
 
+    注意：add_grasp_and_lift 参数已废弃，推荐使用 trajectory_executor.grasp_and_lift() 单独处理抓取和抬升。
+
     Args:
         trajectory_path: 轨迹文件路径
         reference_camera: 参考相机对象（ManiSkill Camera）
-        add_grasp_and_lift: 是否在轨迹末尾添加抓取和抬升动作
-        lift_height: 抬升高度（米），默认0.2m (20cm)
-        num_lift_points: 抬升过程的插值点数量
-        num_grasp_wait_points: 闭合夹爪后的等待点数量（确保抓稳后再lift）
+        add_grasp_and_lift: [已废弃] 是否在轨迹末尾添加抓取和抬升动作
+        lift_height: [已废弃] 抬升高度（米）
+        num_lift_points: [已废弃] 抬升过程的插值点数量
+        num_grasp_wait_points: [已废弃] 闭合夹爪后的等待点数量
 
     Returns:
-        (轨迹列表, 等待点数量)
+        (轨迹列表, 0)
         - 轨迹列表: 每个元素包含世界坐标系下的tcp_position和tcp_quaternion
-        - 等待点数量: 用于闭合夹爪的等待点数量（如果add_grasp_and_lift=False则为0）
+        - 第二个返回值始终为0（保留用于兼容性）
     """
     path = Path(trajectory_path)
     if not path.exists():
@@ -95,41 +97,10 @@ def load_trajectory(
             "tcp_quaternion": quat_xyzw,
         })
 
-    # 如果需要，添加抓取和抬升轨迹点
-    num_grasp_wait_points_actual = 0  # 实际添加的等待点数量
+    # 旧版本的 add_grasp_and_lift 功能已移除
+    # 请使用 trajectory_executor.grasp_and_lift() 函数来处理抓取和抬升
+    if add_grasp_and_lift:
+        print("警告: add_grasp_and_lift 参数已废弃，将被忽略")
+        print("      请使用 trajectory_executor.grasp_and_lift() 函数单独处理抓取和抬升")
 
-    if add_grasp_and_lift and len(trajectory) > 0:
-        # 获取最后一个轨迹点的位置和姿态
-        last_point = trajectory[-1]
-        last_position = last_point["tcp_position"].copy()
-        last_quaternion = last_point["tcp_quaternion"].copy()
-
-        # 步骤1: 添加闭合夹爪的等待点（保持位置和姿态不变，让夹爪有时间完全闭合）
-        # 闭合夹爪需要GRASP_STEPS步，每个轨迹点会被细化为refine_steps步
-        # 为了确保有足够时间闭合，需要：num_grasp_wait_points * refine_steps >= GRASP_STEPS
-        # 假设 GRASP_STEPS=20, refine_steps=2，则需要至少 20/2=10 个点
-        # 使用传入的 num_grasp_wait_points 参数来确保足够时间闭合并稳定
-        num_grasp_wait_points_actual = num_grasp_wait_points
-        for i in range(num_grasp_wait_points_actual):
-            trajectory.append({
-                "step": len(trajectory),
-                "tcp_position": last_position.copy(),
-                "tcp_quaternion": last_quaternion.copy(),
-            })
-
-        # 步骤2: 在世界坐标系的Z轴方向上添加抬升轨迹点
-        for i in range(1, num_lift_points + 1):
-            alpha = i / num_lift_points
-            lift_position = last_position.copy()
-            lift_position[2] += lift_height * alpha  # Z轴是向上的
-
-            trajectory.append({
-                "step": len(trajectory),
-                "tcp_position": lift_position,
-                "tcp_quaternion": last_quaternion.copy(),  # 保持姿态不变
-            })
-
-        print(f"✓ 添加了 {num_grasp_wait_points_actual} 个闭合夹爪点 + {num_lift_points} 个抬升点 (高度: {lift_height*100:.1f}cm)")
-
-    # print(f"✓ 加载轨迹: {len(trajectory)} 个关键点")
-    return trajectory, num_grasp_wait_points_actual
+    return trajectory, 0
