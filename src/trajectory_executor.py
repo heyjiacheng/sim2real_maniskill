@@ -60,7 +60,6 @@ def execute_trajectory_with_arm(
 
             # 将世界坐标系的姿态转换到机械臂基座坐标系
             base_pose = env.unwrapped.agent.robot.pose
-            print(f"IK前基座位姿: 位置 {base_pose.p}, 四元数 {base_pose.q}")
             
             # import pdb; pdb.set_trace()
             # target_tcp_pose_at_base = sapien.Pose(p=[-0.2,0,0], q=[-0.4480736,0.8939967,0, 0])
@@ -110,6 +109,14 @@ def execute_trajectory_with_arm(
 
             # 执行一步
             env.step(action_tensor)
+
+            # 每个关键点的最后一步，打印实际TCP位置与目标的差异
+            if step == refine_steps - 1:
+                actual_tcp_pose = env.unwrapped.agent.tcp_pose
+                actual_position = actual_tcp_pose.p[0].cpu().numpy() if isinstance(actual_tcp_pose.p, torch.Tensor) else actual_tcp_pose.p
+                position_error = np.linalg.norm(actual_position - position)
+                if position_error > 0.01:  # 误差超过1cm时警告
+                    print(f"  警告: 点{idx} TCP位置误差 {position_error*100:.2f}cm - 目标:{position} 实际:{actual_position}")
 
             # 捕获图像（如果启用）
             if capture_images_flag:

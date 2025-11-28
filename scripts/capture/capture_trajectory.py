@@ -173,7 +173,7 @@ class Args:
     num_capture_steps: int = 10  # 捕获的图像步数
     execute_trajectory: bool = True  # 是否让机械臂执行轨迹
     show_trajectory_viz: bool = True  # 是否显示轨迹可视化（半透明grippers）
-    ik_refine_steps: int = 2  # 每个轨迹点的IK细化步数
+    ik_refine_steps: int = 20  # 每个轨迹点的IK细化步数
     do_grasp_and_lift: bool = False  # 轨迹执行完后是否闭合夹爪并抬升20cm
     num_grasp_wait_points: int = 10  # 闭合夹爪后的等待点数量（确保抓稳后再lift）
     # 普通物体加载选项
