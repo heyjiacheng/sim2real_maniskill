@@ -15,6 +15,50 @@ pip install --upgrade mani_skill
 conda activate mani
 ```
 
+## 📂 Data Preparation
+
+### 🗄️ Articulated Objects
+
+Download articulated objects (cabinets, drawers, etc.) from the PartNet-Mobility dataset:
+
+1. **Browse & Download**: Visit [SAPIEN PartNet-Mobility Browser](https://sapien.ucsd.edu/browse)
+2. **Extract**: Place downloaded models in `dataset/partnet_mobility/`
+3. **Structure**: Each model should be in its own folder with the model ID as the folder name
+
+```
+dataset/
+└── partnet_mobility/
+    ├── 12536/          # Model ID
+    │   ├── mobility.urdf
+    │   └── ...
+    ├── 45623/
+    │   └── ...
+    └── ...
+```
+
+### 🎨 Custom Mesh Objects
+
+Place your custom 3D mesh files (.obj, .stl, etc.) in the `dataset/customize/` directory:
+
+```
+dataset/
+└── customize/
+    ├── mug_obj/
+    │   └── base.obj
+    ├── bottle_obj/
+    │   └── model.obj
+    └── your_object/
+        └── mesh.obj
+```
+
+### 🛤️ Trajectory Files
+
+Trajectory files (`trajectory.json`) contain the robot TCP (Tool Center Point) poses in **camera coordinate system**.
+
+Convert to SAPIEN world coordinate here `src/trajectory_loader.py`
+
+You can specify a custom trajectory with `--trajectory-path`.
+
 ## 📸 Usage
 
 ### 1️⃣ Capture Objects (`capture_custom_objects.py`)
@@ -26,11 +70,6 @@ Capture multi-view images of objects without robot interaction.
 **Default object:**
 ```bash
 python scripts/capture/capture_custom_objects.py
-```
-
-**Custom mesh object:**
-```bash
-python scripts/capture/capture_custom_objects.py --object-mesh-path dataset/customize/mug_obj/base.obj
 ```
 
 **Articulated object (cabinet, drawer, etc.):**

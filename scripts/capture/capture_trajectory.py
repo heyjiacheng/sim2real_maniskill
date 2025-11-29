@@ -49,8 +49,6 @@ from src.env_utils import create_maniskill_env, remove_default_objects, load_obj
 # 6. 同时设置机械臂和物体位置:
 #    python scripts/capture/capture_trajectory.py --robot-position 0.5 0 0 --object-position 0.3 0 0.2
 #
-# 注意: tyro 的 tuple 参数语法为空格分隔的值，不需要括号或引号
-#
 # ============================================================================
 
 def load_single_object(mesh_path: str, position: tuple = (0, 0, 0), rotation_deg: tuple = (90, 0, 0)) -> ObjectConfig:
