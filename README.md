@@ -145,6 +145,49 @@ python scripts/capture/capture_trajectory.py --execute-trajectory False
 | `--object-position` | Object position [x y z] | `-0.05 0 0.15` |
 | `--object-rotation` | Object rotation [rx ry rz] | `0 0 10` |
 
+---
+
+### 3️⃣ GraspVLA Policy (`run_graspvla.py`)
+
+Execute manipulation tasks using the GraspVLA vision-language-action policy.
+
+> ⚠️ **Important**: Before running this script, you must launch the GraspVLA server separately:
+> ```bash
+> python others/GraspVLA/vla_network/scripts/serve.py \
+>     --port 6666 \
+>     --path <path_to_model>
+> ```
+
+#### 🎯 Basic Examples
+
+**Default object with instruction:**
+```bash
+python scripts/graspvla/run_graspvla.py --instruction "pick up the mug"
+```
+
+**With custom object:**
+```bash
+python scripts/graspvla/run_graspvla.py \
+    --instruction "pick up the bottle" \
+    --object-mesh-path dataset/customize/bottle/base.obj
+```
+
+**With articulated object:**
+```bash
+python scripts/graspvla/run_graspvla.py \
+    --instruction "open the cabinet door" \
+    --use-articulation \
+    --articulation-id 12536
+```
+
+**Custom positions:**
+```bash
+python scripts/graspvla/run_graspvla.py \
+    --instruction "pick up the mug" \
+    --object-position -0.05 0 0.15 \
+    --robot-position 0.5 0 0
+```
+
 ## 📁 Output
 
 Both scripts generate:

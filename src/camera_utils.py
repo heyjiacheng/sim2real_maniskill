@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -15,12 +15,50 @@ from mani_skill.utils import sapien_utils
 from .image_utils import to_numpy_uint8
 
 
+def transform_point_to_world(point, robot_pose):
+    """将点从机械臂坐标系转换到世界坐标系
+
+    Args:
+        point: 机械臂坐标系中的点 [x, y, z]
+        robot_pose: 机械臂基座的位姿 (SAPIEN Pose对象)
+
+    Returns:
+        世界坐标系中的点 [x, y, z]
+    """
+    # 获取机械臂基座的位置和旋转
+    robot_pos = robot_pose.p
+    robot_quat = robot_pose.q  # [w, x, y, z]
+
+    # 转换为 numpy 数组
+    if isinstance(robot_pos, torch.Tensor):
+        robot_pos = robot_pos.cpu().numpy()
+    if isinstance(robot_quat, torch.Tensor):
+        robot_quat = robot_quat.cpu().numpy()
+
+    # 处理批量维度
+    if robot_pos.ndim > 1:
+        robot_pos = robot_pos[0]
+    if robot_quat.ndim > 1:
+        robot_quat = robot_quat[0]
+
+    # 将四元数转换为旋转矩阵 [w, x, y, z] -> [x, y, z, w]
+    quat_xyzw = [robot_quat[1], robot_quat[2], robot_quat[3], robot_quat[0]]
+    rotation = Rotation.from_quat(quat_xyzw)
+
+    # 应用旋转和平移
+    point_np = np.array(point)
+    world_point = rotation.apply(point_np) + robot_pos
+
+    return world_point.tolist()
+
+
 def setup_cameras(
     scene,
     camera_views: Dict[str, tuple],
     shader: str,
     width: int = 640,
-    height: int = 480
+    height: int = 480,
+    robot=None
 ) -> Dict[str, Camera]:
     """设置多视角相机
 
@@ -30,15 +68,32 @@ def setup_cameras(
         shader: 着色器类型
         width: 图像宽度
         height: 图像高度
+        robot: 可选的机械臂对象。如果提供，将把相机位置从机械臂坐标系转换到世界坐标系
 
     Returns:
         相机字典 {uid: Camera}
     """
     cameras = {}
     for uid, (eye, target) in camera_views.items():
+        # 如果提供了机械臂对象，将坐标从机械臂坐标系转换到世界坐标系
+        if robot is not None:
+            # 获取机械臂基座的位姿
+            robot_pose = robot.robot.pose
+
+            # 转换相机位置和朝向目标到世界坐标系
+            eye_world = transform_point_to_world(eye, robot_pose)
+            target_world = transform_point_to_world(target, robot_pose)
+
+            print(f"Camera '{uid}' transform:")
+            print(f"  Robot frame: eye={eye}, target={target}")
+            print(f"  World frame: eye={eye_world}, target={target_world}")
+        else:
+            eye_world = eye
+            target_world = target
+
         config = CameraConfig(
             uid=uid,
-            pose=sapien_utils.look_at(eye=eye, target=target),
+            pose=sapien_utils.look_at(eye=eye_world, target=target_world),
             width=width,
             height=height,
             fov=np.deg2rad(55.0),

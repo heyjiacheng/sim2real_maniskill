@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from mani_skill.envs.sapien_env import BaseEnv
 from src.object_loader import ObjectConfig, ObjectLoader, load_custom_objects
 from src.camera_utils import capture_images, save_camera_params, setup_cameras
-from src.camera_config import CAMERA_VIEWS
+from src.camera_config import GRASPVLA_CAMERA_VIEWS
 from src.trajectory_executor import initialize_ik_solver
 from src.video_utils import generate_videos
 from src.env_utils import (
@@ -81,8 +81,8 @@ class Args:
     articulation_dataset: str = "partnet-mobility"
 
     # Object pose
-    object_position: tuple = (-0.05, 0.0, 0.15)  # [x, y, z] in meters
-    object_rotation: tuple = (0, 0, 10)  # [rx, ry, rz] in degrees
+    object_position: tuple = (0.0, 0.0, 0.0)  # [x, y, z] in meters
+    object_rotation: tuple = (90, 0, 0)  # [rx, ry, rz] in degrees
 
     # Robot pose
     robot_position: Optional[tuple] = None  # [x, y, z] in meters, None = use default
@@ -94,7 +94,7 @@ class Args:
     hide_goal: bool = True
 
     # Episode settings
-    max_steps: int = 300  # Maximum steps per episode
+    max_steps: int = 300 
     save_video: bool = True
     video_fps: int = 10
 
@@ -215,12 +215,25 @@ def get_observation(env: BaseEnv, cameras: dict, agent: RemoteAgent) -> dict:
         Dictionary containing:
             - 'front_view_image': np.ndarray (H, W, 3)
             - 'side_view_image': np.ndarray (H, W, 3)
-            - 'tcp_pose': np.ndarray (7,) [x, y, z, qw, qx, qy, qz]
+            - 'tcp_pose': np.ndarray (7,) [x, y, z, qw, qx, qy, qz] in robot base frame
             - 'gripper_state': float (0-1, where 0=closed, 1=open)
     """
     # Get robot state from ManiSkill
     robot = env.unwrapped.agent
-    tcp_pose = robot.tcp.pose.raw_pose[0].cpu().numpy()  # [x, y, z, qw, qx, qy, qz]
+
+    # IMPORTANT: Get TCP pose in robot base frame (not world frame)
+    # This matches LIBERO's convention where proprioception is in robot frame
+    tcp_pose_world = robot.tcp.pose.raw_pose[0].cpu().numpy()  # [x, y, z, qw, qx, qy, qz]
+    base_pose_world = robot.robot.pose.raw_pose[0].cpu().numpy()  # [x, y, z, qw, qx, qy, qz]
+
+    # Transform TCP pose from world frame to robot base frame
+    import sapien
+    tcp_world = sapien.Pose(p=tcp_pose_world[:3], q=tcp_pose_world[3:])
+    base_world = sapien.Pose(p=base_pose_world[:3], q=base_pose_world[3:])
+    tcp_base = base_world.inv() * tcp_world
+
+    # Convert back to numpy array [x, y, z, qw, qx, qy, qz]
+    tcp_pose = np.concatenate([tcp_base.p, tcp_base.q])
 
     # Get gripper state
     # ManiSkill gripper: qpos in range [0, 0.04] typically
@@ -229,20 +242,22 @@ def get_observation(env: BaseEnv, cameras: dict, agent: RemoteAgent) -> dict:
     gripper_state = np.mean(gripper_qpos) / 0.04  # Normalize assuming max opening is 0.04
     gripper_state = np.clip(gripper_state, 0.0, 1.0)
 
-    # Render camera images
-    env.unwrapped.scene.update_render()
+    # Render camera images (update only human render cameras, not sensors)
+    env.unwrapped.scene.update_render(update_sensors=False, update_human_render_cameras=True)
 
     # Get front view image (main camera)
     front_camera = cameras.get('front', cameras.get('behind'))
-    front_camera.take_picture()
-    front_rgba = front_camera.get_picture("Color")[..., :3]  # Remove alpha channel
-    front_rgb = (front_rgba * 255).astype(np.uint8)
+    front_camera.capture()
+    front_obs = front_camera.get_obs(rgb=True, depth=False, position=False, segmentation=False)
+    # Convert from [0, 1] float to [0, 255] uint8
+    from src.image_utils import to_numpy_uint8
+    front_rgb = to_numpy_uint8(front_obs["rgb"])
 
     # Get side view image
     side_camera = cameras.get('right', cameras.get('left'))
-    side_camera.take_picture()
-    side_rgba = side_camera.get_picture("Color")[..., :3]
-    side_rgb = (side_rgba * 255).astype(np.uint8)
+    side_camera.capture()
+    side_obs = side_camera.get_obs(rgb=True, depth=False, position=False, segmentation=False)
+    side_rgb = to_numpy_uint8(side_obs["rgb"])
 
     return {
         'front_view_image': front_rgb,
@@ -257,36 +272,53 @@ def execute_action(env: BaseEnv, action: np.ndarray, kinematics) -> None:
 
     Args:
         env: ManiSkill environment
-        action: Action array (7,) [x, y, z, rx, ry, rz, gripper]
+        action: Action array (7,) [x, y, z, rx, ry, rz, gripper] in robot base frame
         kinematics: IK solver
     """
+    import transforms3d as t3d
+    from mani_skill.utils.structs import Pose
+
     # Extract target pose and gripper command
     target_pos = action[:3]
     target_euler = action[3:6]
     target_gripper = action[6]
 
-    # Convert euler angles to quaternion [w, x, y, z]
-    quat_xyzw = Rotation.from_euler('xyz', target_euler).as_quat()  # [x, y, z, w]
-    target_quat = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])  # [w, x, y, z]
+    # Convert euler angles to quaternion
+    # IMPORTANT: Use 'sxyz' convention to match GraspVLA training (same as LIBERO)
+    # transforms3d uses 'sxyz' by default, so we convert euler -> matrix -> quaternion
+    rot_mat = t3d.euler.euler2mat(*target_euler)  # euler (sxyz) -> rotation matrix
+    quat_wxyz = t3d.quaternions.mat2quat(rot_mat)  # rotation matrix -> quaternion [w, x, y, z]
+
+    # IMPORTANT: Action is already in robot base frame (matching LIBERO convention)
+    # No need to transform from world to base frame
+    # Create target pose directly from action
+    device = env.unwrapped.device
+    p_tensor = torch.tensor([target_pos], dtype=torch.float32, device=device)
+    q_tensor = torch.tensor([quat_wxyz], dtype=torch.float32, device=device)
+    target_pose = Pose.create_from_pq(p=p_tensor, q=q_tensor)
 
     # Solve IK
-    result = kinematics.solve(
-        target_pos=torch.tensor(target_pos, dtype=torch.float32).unsqueeze(0).cuda(),
-        target_quat=torch.tensor(target_quat, dtype=torch.float32).unsqueeze(0).cuda(),
+    current_qpos = env.unwrapped.agent.robot.get_qpos()
+    target_qpos = kinematics.compute_ik(
+        target_pose,
+        q0=current_qpos,
+        use_delta_ik_solver=False,
     )
 
-    if not result.success[0]:
-        print("  Warning: IK solution not found, using best effort")
+    if target_qpos is None:
+        print("  Warning: IK solution not found, skipping this action")
+        return
 
-    # Get joint positions
-    joint_pos = result.js_solution[0, :7].cpu().numpy()
+    # Get joint positions (first 7 joints for arm)
+    joint_pos = target_qpos[0, :7].cpu().numpy()
 
     # Create full action: [joint_positions (7,), gripper (1,)]
-    # ManiSkill expects gripper in [0, 1] where 1 = open
+    # ManiSkill Panda gripper expects 1 value that controls both fingers
+    # gripper value: 0=closed, 1=open
     full_action = np.concatenate([joint_pos, [target_gripper]])
 
     # Execute action
-    action_tensor = torch.tensor(full_action, dtype=torch.float32).unsqueeze(0).cuda()
+    action_tensor = torch.tensor(full_action, dtype=torch.float32).unsqueeze(0).to(device)
     env.step(action_tensor)
 
 
@@ -317,15 +349,31 @@ def run_episode(env: BaseEnv, agent: RemoteAgent, cameras: dict,
     try:
         while step < args.max_steps and not done:
             # Get observation
+            if args.debug and step == 0:
+                print("Getting first observation...")
+
             obs = get_observation(env, cameras, agent)
 
+            if args.debug and step == 0:
+                print(f"✓ Observation received:")
+                print(f"  - Front image shape: {obs['front_view_image'].shape}")
+                print(f"  - Side image shape: {obs['side_view_image'].shape}")
+                print(f"  - TCP pose: {obs['tcp_pose']}")
+                print(f"  - Gripper state: {obs['gripper_state']}\n")
+
             # Get action from policy
-            action, bbox = agent.step(obs, debug=args.debug)
+            if args.debug and step == 0:
+                print("Requesting action from GraspVLA server...")
+
+            action, _ = agent.step(obs, debug=args.debug)
+
+            if args.debug and step == 0:
+                print(f"✓ Action received: {action}\n")
 
             if args.debug:
                 print(f"Step {step}:")
-                print(f"  TCP pose: {obs['tcp_pose'][:3]}")
-                print(f"  Action: {action[:3]}, gripper: {action[6]}")
+                print(f"  TCP pos: [{obs['tcp_pose'][0]:.3f}, {obs['tcp_pose'][1]:.3f}, {obs['tcp_pose'][2]:.3f}]")
+                print(f"  Action pos: [{action[0]:.3f}, {action[1]:.3f}, {action[2]:.3f}], gripper: {action[6]:.2f}")
 
             # Execute action
             execute_action(env, action, kinematics)
@@ -333,6 +381,8 @@ def run_episode(env: BaseEnv, agent: RemoteAgent, cameras: dict,
             # Capture images
             if step % 5 == 0:  # Capture every 5 steps to save disk space
                 capture_images(cameras, env.unwrapped.scene, output_dir, step // 5)
+                if args.debug and step % 20 == 0:
+                    print(f"  ✓ Captured images at step {step}")
 
             step += 1
 
@@ -346,6 +396,10 @@ def run_episode(env: BaseEnv, agent: RemoteAgent, cameras: dict,
 
     except KeyboardInterrupt:
         print("\nUser interrupted")
+    except Exception as e:
+        print(f"\n✗ Error during episode: {e}")
+        import traceback
+        traceback.print_exc()
 
     print(f"\nEpisode finished after {step} steps")
 
@@ -414,14 +468,16 @@ def main(args: Args):
         loader.load_object(object_config)
         print(f"✓ Loaded: {object_config.name}\n")
 
-    # Setup cameras
+    # Setup cameras (with robot coordinate frame)
     print("\nSetting up cameras...")
+    robot = env.unwrapped.agent
     cameras = setup_cameras(
         env.unwrapped.scene,
-        CAMERA_VIEWS,
+        GRASPVLA_CAMERA_VIEWS,
         args.shader,
         args.image_width,
-        args.image_height
+        args.image_height,
+        robot=robot  # Pass robot for coordinate transformation
     )
     print(f"✓ Cameras ready: {list(cameras.keys())}")
 
@@ -478,7 +534,7 @@ def main(args: Args):
 
         # Generate videos
         if args.save_video:
-            generate_videos(output_dir, list(CAMERA_VIEWS.keys()), args.video_fps)
+            generate_videos(output_dir, list(GRASPVLA_CAMERA_VIEWS.keys()), args.video_fps)
 
         print(f"\n✓ Episode statistics:")
         print(f"  - Steps: {stats['steps']}")

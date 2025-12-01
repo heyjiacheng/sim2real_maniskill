@@ -49,13 +49,13 @@ First, launch the GraspVLA policy server in a separate terminal:
 
 ```bash
 cd others/GraspVLA/vla_network
-python scripts/serve.py --port 5555 --path <path_to_your_model_checkpoint>
+python scripts/serve.py --port 6666 --path <path_to_your_model_checkpoint>
 ```
 
 The server will:
 - Load the VLA model
 - Warm up with test samples
-- Listen on port 5555 for ZMQ requests
+- Listen on port 6666 for ZMQ requests
 
 ### Step 2: Run the ManiSkill Integration
 
