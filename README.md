@@ -1,6 +1,6 @@
 # 🤖 test_any_policy
 
-A ManiSkill-based project for visualizing any robotic policy or trajectory data.
+A ManiSkill-based project for visualizing any robotic policy or trajectory.
 
 ### 📦 Installation
 
