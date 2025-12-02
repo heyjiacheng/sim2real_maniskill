@@ -24,11 +24,13 @@ from typing import Optional
 import numpy as np
 import torch
 import tyro
+import sapien
 
 # Add project root to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from mani_skill.envs.sapien_env import BaseEnv
+from src.image_utils import to_numpy_uint8
 from src.camera_utils import capture_images, save_camera_params, setup_cameras
 from src.camera_config import GRASPVLA_CAMERA_VIEWS
 from src.trajectory_executor import initialize_ik_solver
@@ -38,6 +40,8 @@ from src.env_utils import (
     hide_goal_markers,
     set_robot_base_pose
 )
+
+import transforms3d as t3d
 
 # Import GraspVLA agent
 from remote_agent import RemoteAgent
@@ -101,7 +105,6 @@ def get_observation(env: BaseEnv, cameras: dict, agent: RemoteAgent) -> dict:
     base_pose_world = robot.robot.pose.raw_pose[0].cpu().numpy()  # [x, y, z, qw, qx, qy, qz]
 
     # Transform TCP pose from world frame to robot base frame
-    import sapien
     tcp_world = sapien.Pose(p=tcp_pose_world[:3], q=tcp_pose_world[3:])
     base_world = sapien.Pose(p=base_pose_world[:3], q=base_pose_world[3:])
     tcp_base = base_world.inv() * tcp_world
@@ -121,7 +124,6 @@ def get_observation(env: BaseEnv, cameras: dict, agent: RemoteAgent) -> dict:
     front_camera = cameras.get('front', cameras.get('behind'))
     front_camera.capture()
     front_obs = front_camera.get_obs(rgb=True, depth=False, position=False, segmentation=False)
-    from src.image_utils import to_numpy_uint8
     front_rgb = to_numpy_uint8(front_obs["rgb"])
 
     # Get side view image
@@ -146,7 +148,6 @@ def execute_action(env: BaseEnv, action: np.ndarray, kinematics) -> None:
         action: Action array (7,) [x, y, z, rx, ry, rz, gripper] in robot base frame
         kinematics: IK solver
     """
-    import transforms3d as t3d
     from mani_skill.utils.structs import Pose
 
     # Extract target pose and gripper command

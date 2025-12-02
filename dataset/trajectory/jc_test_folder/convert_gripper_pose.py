@@ -373,7 +373,7 @@ def main():
     parser = argparse.ArgumentParser()
     # add base_dir
     parser.add_argument("--base_dir", type=str, default="/home/supertc/repo/hamer/jc_test_folder/data/000_mug")
-    parser.add_argument("--frame_id", type=int, default=None)
+    parser.add_argument("--frame_id", type=int, default=-1)
     parser.add_argument("--viz", action="store_true")
     args = parser.parse_args()
 

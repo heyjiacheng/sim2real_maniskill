@@ -371,8 +371,8 @@ def main():
     """
     parser = argparse.ArgumentParser()
     # add base_dir
-    parser.add_argument("--base_dir", type=str, default="/home/supertc/jc_workspace/sim2real_maniskill/dataset/trajectory/jc_test_folder/data/oven")
-    parser.add_argument("--frame_id", type=int, default=None)
+    parser.add_argument("--base_dir", type=str, default="dataset/trajectory/jc_test_folder/data/oven")
+    parser.add_argument("--frame_id", type=int, default=-1)
     parser.add_argument("--viz", action="store_true")
     args = parser.parse_args()
 
