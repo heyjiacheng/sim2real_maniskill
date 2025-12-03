@@ -212,6 +212,17 @@ def run_episode(env: BaseEnv, agent: RemoteAgent, cameras: dict,
     step = 0
     done = False
 
+    # Trajectory recording lists
+    trajectory = {
+        'tcp_positions': [],      # TCP position [x, y, z] in robot base frame
+        'tcp_rotations': [],      # TCP rotation [qw, qx, qy, qz]
+        'tcp_euler_angles': [],   # TCP rotation in euler angles [rx, ry, rz]
+        'gripper_states': [],     # Gripper state [0, 1]
+        'joint_positions': [],    # Joint positions (7 joints)
+        'actions': [],            # Actions sent to the robot [x, y, z, rx, ry, rz, gripper]
+        'timestamps': [],         # Step timestamps
+    }
+
     try:
         while step < args.max_steps and not done:
             # Get observation
@@ -241,6 +252,22 @@ def run_episode(env: BaseEnv, agent: RemoteAgent, cameras: dict,
                 print(f"  TCP pos: [{obs['tcp_pose'][0]:.3f}, {obs['tcp_pose'][1]:.3f}, {obs['tcp_pose'][2]:.3f}]")
                 print(f"  Action pos: [{action[0]:.3f}, {action[1]:.3f}, {action[2]:.3f}], gripper: {action[6]:.2f}")
 
+            # Record trajectory data (before executing action)
+            robot = env.unwrapped.agent
+            current_qpos = robot.robot.get_qpos()[0, :7].cpu().numpy()
+
+            # Convert quaternion to euler angles for easier interpretation
+            tcp_quat = obs['tcp_pose'][3:]  # [qw, qx, qy, qz]
+            tcp_euler = t3d.euler.quat2euler([tcp_quat[0], tcp_quat[1], tcp_quat[2], tcp_quat[3]])
+
+            trajectory['tcp_positions'].append(obs['tcp_pose'][:3].copy())
+            trajectory['tcp_rotations'].append(obs['tcp_pose'][3:].copy())
+            trajectory['tcp_euler_angles'].append(np.array(tcp_euler))
+            trajectory['gripper_states'].append(obs['gripper_state'])
+            trajectory['joint_positions'].append(current_qpos.copy())
+            trajectory['actions'].append(action.copy())
+            trajectory['timestamps'].append(step)
+
             # Execute action
             execute_action(env, action, kinematics)
 
@@ -268,9 +295,15 @@ def run_episode(env: BaseEnv, agent: RemoteAgent, cameras: dict,
 
     print(f"\nEpisode finished after {step} steps")
 
+    # Convert trajectory lists to numpy arrays
+    for key in trajectory:
+        if len(trajectory[key]) > 0:
+            trajectory[key] = np.array(trajectory[key])
+
     return {
         'steps': step,
         'success': done,
+        'trajectory': trajectory,
     }
 
 
@@ -362,6 +395,25 @@ def main(args: Args):
         camera_params = save_camera_params(cameras, output_dir)
         print(f"✓ Camera params: {output_dir / 'camera_params'}")
         print(f"  - {len(camera_params)} camera views")
+
+        # Save trajectory
+        trajectory = stats['trajectory']
+        trajectory_file = output_dir / 'trajectory.npz'
+        np.savez_compressed(
+            trajectory_file,
+            tcp_positions=trajectory['tcp_positions'],
+            tcp_rotations=trajectory['tcp_rotations'],
+            tcp_euler_angles=trajectory['tcp_euler_angles'],
+            gripper_states=trajectory['gripper_states'],
+            joint_positions=trajectory['joint_positions'],
+            actions=trajectory['actions'],
+            timestamps=trajectory['timestamps'],
+            instruction=args.instruction,
+        )
+        print(f"✓ Trajectory: {trajectory_file}")
+        print(f"  - {len(trajectory['timestamps'])} timesteps")
+        print(f"  - TCP positions shape: {trajectory['tcp_positions'].shape}")
+        print(f"  - Joint positions shape: {trajectory['joint_positions'].shape}")
 
         # Generate videos
         if args.save_video:

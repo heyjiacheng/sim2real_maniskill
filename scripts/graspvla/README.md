@@ -1,45 +1,67 @@
 # GraspVLA + ManiSkill Integration
 
-This directory contains code to integrate the GraspVLA robot motion policy with the ManiSkill simulation environment.
+This directory integrates the GraspVLA Vision-Language-Action (VLA) model with the ManiSkill simulation environment, replacing the original LIBERO environment used in GraspVLA playground.
 
-## Overview
-
-The integration replaces the LIBERO simulation environment used in the original GraspVLA playground with ManiSkill, allowing you to:
-- Run GraspVLA policies in ManiSkill environments
-- Load custom objects (regular meshes or articulated objects)
-- Visualize and save multi-view camera observations
-- Execute learned manipulation policies with IK control
-
-## Architecture
+## System Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│  GraspVLA Policy Server (ZMQ)           │
-│  (others/GraspVLA/vla_network/          │
-│   scripts/serve.py)                     │
-└────────────────┬────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│  GraspVLA Policy Server (ZMQ Port: 6666)         │
+│  - Receives: images + proprioception history     │
+│  - Outputs: delta actions (relative movements)   │
+└────────────────┬─────────────────────────────────┘
                  │ ZMQ Communication
-                 │ (observations → actions)
-┌────────────────▼────────────────────────┐
-│  RemoteAgent                            │
-│  - Sends observations (images, proprio) │
-│  - Receives delta actions               │
-│  - Converts to absolute actions         │
-└────────────────┬────────────────────────┘
-                 │
-┌────────────────▼────────────────────────┐
-│  ManiSkill Environment                  │
-│  - Renders camera images                │
-│  - Executes actions via IK              │
-│  - Simulates physics                    │
-└─────────────────────────────────────────┘
+┌────────────────▼─────────────────────────────────┐
+│  RemoteAgent (remote_agent.py)                   │
+│  - Collects observations from ManiSkill          │
+│  - Converts: world frame → robot base frame      │
+│  - Converts: delta actions → absolute actions    │
+│  - Converts: GraspVLA gripper ↔ ManiSkill        │
+└────────────────┬─────────────────────────────────┘
+                 │ Absolute poses
+┌────────────────▼─────────────────────────────────┐
+│  ManiSkill Environment                           │
+│  - IK solver: pose → joint positions             │
+│  - Physics simulation + rendering                │
+└──────────────────────────────────────────────────┘
 ```
 
 ## Files
 
-- **`remote_agent.py`**: RemoteAgent class that communicates with GraspVLA policy server via ZMQ
-- **`run_graspvla.py`**: Main script to run episodes with GraspVLA policy in ManiSkill
-- **`README.md`**: This file
+- **`remote_agent.py`**: Communicates with GraspVLA server, handles all data conversions
+- **`run_graspvla.py`**: Run GraspVLA with custom objects
+- **`run_graspvla_ycb.py`**: Run GraspVLA with standard PickClutterYCB-v1 environment
+
+## Critical Design Decisions
+
+### 1. Coordinate Frame: Robot Base Frame
+
+**Why?** GraspVLA was trained with LIBERO using robot-relative coordinates.
+
+**Implementation:**
+- ManiSkill provides TCP pose in world frame
+- **Must convert** to robot base frame: `tcp_base = base_world.inv() * tcp_world`
+- All subsequent processing stays in robot base frame
+- This ensures the model sees the same coordinate distribution as during training
+
+### 2. Gripper Convention Conversion
+
+**GraspVLA (trained with LIBERO):** -1 (close), 0 (no change), 1 (open)
+**ManiSkill:** 0 (close), 1 (open)
+
+**RemoteAgent handles conversion:**
+- Uses internally tracked `finger_state` to avoid observation noise
+- Inserts 4 identical actions during gripper transitions for smooth control
+
+### 3. Delta to Absolute Actions
+
+**GraspVLA outputs:** Relative movements (deltas)
+**ManiSkill IK needs:** Absolute poses
+
+**Conversion:**
+- Position: `next_pos = current_pos + delta_pos`
+- Rotation: `next_R = delta_R @ current_R` (matrix multiplication)
+- Actions are accumulated in robot base frame
 
 ## Usage
 
@@ -116,106 +138,46 @@ After running, results are saved to `outputs/graspvla/<timestamp>/`:
 - `camera_params/`: Camera intrinsic and extrinsic parameters
 - `videos/`: Generated videos from different camera viewpoints (if `--save-video` is enabled)
 
-## Command Line Arguments
+## Key Arguments
 
-### Environment Settings
-- `--env-id`: ManiSkill environment ID (default: "PickCube-v1")
-- `--sim-backend`: Simulation backend, "auto", "cpu", or "gpu" (default: "auto")
-- `--render-backend`: Rendering backend, "cpu" or "gpu" (default: "gpu")
-- `--shader`: Shader type, "rt", "rt-fast", or "default" (default: "rt")
-- `--seed`: Random seed for reproducibility
+**Required:**
+- `--instruction`: Task instruction (e.g., "pick up the mug")
 
-### Policy Server Connection
-- `--port`: ZMQ server port where GraspVLA is running (default: 5555)
-- `--instruction`: Task instruction text (e.g., "pick up the mug")
+**Common:**
+- `--port`: GraspVLA server port (default: 6666)
+- `--object-mesh-path`: Path to custom object mesh
+- `--object-position`: Object position [x, y, z]
+- `--robot-position`: Robot base position [x, y, z]
+- `--max-steps`: Max steps per episode (default: 300)
+- `--debug`: Enable debug output
 
-### Object Loading
-
-**Mode 1: Regular Mesh Object**
-- `--object-mesh-path`: Path to object mesh file (default: "dataset/customize/mug_obj/base.obj")
-
-**Mode 2: Articulated Object**
+**For articulated objects:**
 - `--use-articulation`: Enable articulation mode
-- `--articulation-id`: Model ID from dataset (e.g., "12536")
-- `--articulation-dataset`: Dataset name (default: "partnet-mobility")
+- `--articulation-id`: Model ID (e.g., "12536")
 
-**Common Object Settings**
-- `--object-position`: Object position [x, y, z] in meters (default: -0.05 0 0.15)
-- `--object-rotation`: Object rotation [rx, ry, rz] in degrees (default: 0 0 10)
+See `--help` for full list of arguments.
 
-### Robot Settings
-- `--robot-position`: Robot base position [x, y, z] in meters (default: None = use default)
-- `--robot-rotation`: Robot base rotation [rx, ry, rz] in degrees (default: 0 0 0)
+## Data Flow
 
-### Camera and Rendering
-- `--image-width`: Camera image width in pixels (default: 256, GraspVLA expects 256x256)
-- `--image-height`: Camera image height in pixels (default: 256)
-- `--hide-goal`: Hide goal markers in the scene (default: True)
-
-### Episode Settings
-- `--max-steps`: Maximum steps per episode (default: 300)
-- `--save-video`: Save videos after episode (default: True)
-- `--video-fps`: Video frame rate (default: 10)
-
-### Output
-- `--output-root`: Root directory for outputs (default: "outputs/graspvla")
-
-### Debug
-- `--debug`: Enable debug output with detailed information
-
-## Key Differences from LIBERO
-
-1. **Observation Format**:
-   - LIBERO: Uses `robot0_joint_pos` for proprioception and specific image keys
-   - ManiSkill: Extracts TCP pose directly from robot state, renders custom cameras
-
-2. **Action Execution**:
-   - LIBERO: Uses robot's built-in IK or joint control
-   - ManiSkill: Uses CuRobo IK solver for accurate pose control
-
-3. **Gripper Convention**:
-   - GraspVLA: -1 (closed), 0 (no change), 1 (open)
-   - ManiSkill: 0 (closed), 1 (open)
-   - RemoteAgent handles the conversion automatically
-
-4. **Camera Setup**:
-   - LIBERO: Fixed camera positions based on scene
-   - ManiSkill: Customizable cameras defined in `CAMERA_VIEWS`
+1. **ManiSkill** renders images, provides TCP pose (world frame) and gripper state
+2. **RemoteAgent** converts to robot base frame, maintains 4-frame history
+3. **GraspVLA Server** receives observation, returns delta actions (chunk of 8-16)
+4. **RemoteAgent** accumulates deltas into absolute poses
+5. **ManiSkill** solves IK and executes joint commands
 
 ## Troubleshooting
 
-### "Failed to connect to policy server"
-- Make sure the GraspVLA server is running on the specified port
-- Check that the port number matches in both server and client
-- Verify no firewall is blocking localhost connections
+**"Failed to connect to policy server"**
+- Ensure GraspVLA server is running: `python others/GraspVLA/vla_network/scripts/serve.py --port 6666 --path <model>`
+- Check port matches between server and client
 
-### "IK solution not found"
-- The target pose may be unreachable for the robot
-- Try adjusting object or robot positions
-- Check if the workspace is within robot's reach
+**"IK solution not found"**
+- Target pose may be unreachable
+- Try adjusting `--object-position` or `--robot-position`
 
-### "No URDF file found"
-- Make sure the articulation dataset is properly downloaded
-- Check the path format: `dataset/<dataset_name>/<model_id>/`
-- Verify the model ID exists in the dataset
-
-### Images are too dark/bright
-- Adjust shader settings: try `--shader rt-fast` or `--shader default`
-- Check camera positions and lighting in the scene
+**"No URDF file found"**
+- Verify articulation dataset is downloaded in `dataset/<dataset_name>/<model_id>/`
 
 ## Dependencies
 
-- ManiSkill (with GPU simulation)
-- PyTorch
-- NumPy
-- transforms3d
-- ZMQ (pyzmq)
-- CuRobo (for IK solving)
-- tyro (for command line arguments)
-- scipy (for rotation utilities)
-
-## References
-
-- Original GraspVLA playground: `others/GraspVLA/GraspVLA-playground/`
-- GraspVLA policy server: `others/GraspVLA/vla_network/scripts/serve.py`
-- ManiSkill trajectory capture: `scripts/capture/capture_trajectory.py`
+- ManiSkill, PyTorch, NumPy, transforms3d, ZMQ, CuRobo, tyro, scipy
