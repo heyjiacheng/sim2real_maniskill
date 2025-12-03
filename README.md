@@ -8,11 +8,14 @@ A ManiSkill-based project for visualizing any robotic policy or trajectory.
 # Create conda environment
 conda create -n mani python=3.12
 
+# Activate environment
+conda activate mani
+
 # Install ManiSkill
 pip install --upgrade mani_skill
 
-# Activate environment
-conda activate mani
+# (Optional) Install Open3D
+pip install open3d
 ```
 
 ## 📂 Data Preparation
@@ -91,14 +94,8 @@ Execute manipulation tasks using GraspVLA policy with ManiSkill's PickClutterYCB
 
 **Default scene:**
 ```bash
-python scripts/graspvla/run_graspvla_ycb.py --instruction "pick up the object"
+python scripts/graspvla/run_graspvla_ycb.py --instruction "pick up the object" --seed 42
 ```
-
-**Fixed scene (reproducible):**
-```bash
-python scripts/graspvla/run_graspvla_ycb.py --instruction "grasp the mug" --seed 42
-```
-
 
 ### Capture Objects (`capture_custom_objects.py`)
 
@@ -121,48 +118,20 @@ python scripts/capture/capture_custom_objects.py --use-articulation --articulati
 python scripts/capture/capture_custom_objects.py --object-position 0 0 0.15 --object-rotation 90 0 0
 ```
 
-#### ⚙️ Common Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--object-mesh-path` | Path to mesh file (.obj) | `dataset/customize/mug_obj/base.obj` |
-| `--use-articulation` | Use articulated object | `False` |
-| `--articulation-id` | Model ID for articulated objects | `12536` |
-| `--object-position` | Position [x y z] in meters | `-0.05 0 0.15` |
-| `--object-rotation` | Rotation [rx ry rz] in degrees | `0 0 10` |
-| `--image-width` | Image width | `640` |
-| `--image-height` | Image height | `480` |
-| `--shader` | Renderer (`rt`, `rt-fast`, `default`) | `default` |
-
----
-
 ### Capture Trajectory (`capture_trajectory.py`)
 
 Execute robot trajectories and capture the entire manipulation process.
 
 #### 🎯 Basic Examples
 
-**Execute trajectory:**
+**Generate Trajectory**
 ```bash
-python scripts/capture/capture_trajectory.py
-```
-
-**With articulated object:**
-```bash
-python scripts/capture/capture_trajectory.py --use-articulation --articulation-id 12536
-```
-
-**With grasp & lift:**
-```bash
-python scripts/capture/capture_trajectory.py --do-grasp-and-lift
+python scripts/capture/convert_gripper_pose.py 
 ```
 
 **Custom robot & object positions:**
 ```bash
-python scripts/capture/capture_trajectory.py \
-    --robot-position 0.5 0 0 \
-    --object-position -0.05 0 0.15 \
-    --object-rotation 0 0 10
+python scripts/capture/capture_trajectory.py --use_articulation --articulation_id 12536 --robot_position -0.6 -0.8 0 --robot_rotation 0 0 90
 ```
 
 **Static capture (no trajectory):**
@@ -170,21 +139,10 @@ python scripts/capture/capture_trajectory.py \
 python scripts/capture/capture_trajectory.py --execute-trajectory False
 ```
 
-#### ⚙️ Common Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--trajectory-path` | Path to trajectory JSON | `dataset/trajectory/.../trajectory.json` |
-| `--execute-trajectory` | Execute the trajectory | `True` |
-| `--show-trajectory-viz` | Show gripper visualizations | `True` |
-| `--do-grasp-and-lift` | Grasp and lift after trajectory | `False` |
-| `--ik-refine-steps` | IK refinement steps per point | `20` |
-| `--robot-position` | Robot base position [x y z] | `None` |
-| `--robot-rotation` | Robot base rotation [rx ry rz] | `0 0 0` |
-| `--object-position` | Object position [x y z] | `-0.05 0 0.15` |
-| `--object-rotation` | Object rotation [rx ry rz] | `0 0 10` |
-
----
+**With grasp & lift:**
+```bash
+python scripts/capture/capture_trajectory.py --do-grasp-and-lift
+```
 
 
 ## 📁 Output
